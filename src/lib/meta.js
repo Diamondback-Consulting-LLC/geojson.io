@@ -172,7 +172,7 @@ module.exports.addvectortiles = function (context, baseUrl) {
         }
       });
 
-      // Click to inspect feature properties
+      // Click to inspect and edit feature properties
       context.map.on('click', fillLayerId, (e) => {
         if (!e.features || !e.features.length) return;
 
@@ -180,32 +180,148 @@ module.exports.addvectortiles = function (context, baseUrl) {
         const props = feature.properties || {};
         const keys = Object.keys(props);
 
+        // Calculate tile coordinates from click point for tile_hint
+        const zoom = Math.floor(context.map.getZoom());
+        const lng = e.lngLat.lng;
+        const lat = e.lngLat.lat;
+        const tileX = Math.floor(((lng + 180) / 360) * (1 << zoom));
+        const latRad = (lat * Math.PI) / 180;
+        const tileY = Math.floor(
+          ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) /
+            2) *
+            (1 << zoom)
+        );
+
         let html =
           '<div style="max-height:300px;overflow-y:auto;font-size:12px;font-family:monospace;">';
+        html +=
+          '<form id="vt-edit-form" action="javascript:void(0);" style="margin:0">';
         html += '<table style="border-collapse:collapse;width:100%">';
         for (let i = 0; i < keys.length; i++) {
           const k = keys[i];
-          const v = props[k];
-          // Truncate long values for display
-          let display = String(v);
-          if (display.length > 100) display = display.substring(0, 100) + '...';
+          const v = String(props[k]);
+          const isId = k === '_merge_id';
           html +=
             '<tr style="border-bottom:1px solid #eee">' +
-            '<td style="padding:2px 6px 2px 0;font-weight:bold;vertical-align:top;white-space:nowrap;color:#066">' +
-            k +
+            '<td style="padding:2px 4px 2px 0;font-weight:bold;vertical-align:top;white-space:nowrap;color:#066">' +
+            '<input type="text" data-role="key" value="' +
+            k.replace(/"/g, '&quot;') +
+            '" readonly ' +
+            'style="border:none;background:transparent;font-weight:bold;color:#066;width:100%;font-size:12px;font-family:monospace;padding:0">' +
             '</td>' +
             '<td style="padding:2px 0;word-break:break-all">' +
-            display +
+            '<input type="text" data-role="value" data-key="' +
+            k.replace(/"/g, '&quot;') +
+            '" value="' +
+            v.replace(/"/g, '&quot;') +
+            '"' +
+            (isId ? ' readonly' : '') +
+            ' style="border:1px solid ' +
+            (isId ? 'transparent' : '#ccc') +
+            ';width:100%;font-size:12px;font-family:monospace;padding:1px 3px;box-sizing:border-box;' +
+            (isId ? 'background:transparent;color:#999' : 'background:#fff') +
+            '">' +
             '</td>' +
             '</tr>';
         }
-        html += '</table></div>';
+        html += '</table>';
+        html +=
+          '<div style="padding:6px 0 2px;display:flex;align-items:center;gap:6px">' +
+          '<button type="submit" id="vt-save-btn" style="background:#088;color:#fff;border:none;padding:4px 12px;cursor:pointer;font-size:12px;border-radius:2px">Save</button>' +
+          '<button type="button" id="vt-cancel-btn" style="background:#eee;color:#333;border:1px solid #ccc;padding:4px 12px;cursor:pointer;font-size:12px;border-radius:2px">Cancel</button>' +
+          '<span id="vt-status" style="font-size:11px;color:#666"></span>' +
+          '</div>';
+        html += '</form></div>';
 
         const mapboxgl = require('mapbox-gl');
-        new mapboxgl.Popup({ maxWidth: '400px' })
+        const popup = new mapboxgl.Popup({ maxWidth: '420px' })
           .setLngLat(e.lngLat)
           .setHTML(html)
           .addTo(context.map);
+
+        const popupEl = popup.getElement();
+
+        // Bind cancel button
+        const cancelBtn = popupEl.querySelector('#vt-cancel-btn');
+        if (cancelBtn) {
+          cancelBtn.addEventListener('click', () => popup.remove());
+        }
+
+        // Bind save
+        const form = popupEl.querySelector('#vt-edit-form');
+        if (form) {
+          form.addEventListener('submit', (evt) => {
+            evt.preventDefault();
+            const saveBtn = popupEl.querySelector('#vt-save-btn');
+            const status = popupEl.querySelector('#vt-status');
+
+            // Collect edited properties
+            const editedProps = {};
+            const valueInputs = form.querySelectorAll(
+              'input[data-role="value"]'
+            );
+            valueInputs.forEach((input) => {
+              const key = input.getAttribute('data-key');
+              if (key !== '_merge_id') {
+                editedProps[key] = input.value;
+              }
+            });
+
+            const mergeId = props['_merge_id'];
+            if (!mergeId) {
+              status.textContent = 'No _merge_id on feature';
+              status.style.color = '#c00';
+              return;
+            }
+
+            // Disable save while in-flight
+            saveBtn.disabled = true;
+            saveBtn.style.opacity = '0.5';
+            status.textContent = 'Saving...';
+            status.style.color = '#666';
+
+            const editUrl = cleanUrl + '/edit';
+            fetch(editUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                _merge_id: String(mergeId),
+                properties: editedProps,
+                tile_hint: { z: zoom, x: tileX, y: tileY }
+              })
+            })
+              .then((res) => res.json())
+              .then((result) => {
+                if (result.success) {
+                  status.textContent =
+                    'Updated ' +
+                    result.tiles_updated +
+                    ' tiles' +
+                    (result.geojson_updated ? ' + geojson' : '');
+                  status.style.color = '#080';
+
+                  // Refresh tiles: swap tile URL with cache buster to force re-fetch
+                  const source = context.map.getSource(sourceId);
+                  if (source && source.setTiles) {
+                    source.setTiles([
+                      cleanUrl + '/{z}/{x}/{y}.pbf?_t=' + Date.now()
+                    ]);
+                  }
+                } else {
+                  status.textContent = result.error || 'Update failed';
+                  status.style.color = '#c00';
+                  saveBtn.disabled = false;
+                  saveBtn.style.opacity = '1';
+                }
+              })
+              .catch((err) => {
+                status.textContent = 'Error: ' + err.message;
+                status.style.color = '#c00';
+                saveBtn.disabled = false;
+                saveBtn.style.opacity = '1';
+              });
+          });
+        }
       });
 
       // Pointer cursor on hover
