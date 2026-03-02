@@ -361,11 +361,16 @@ class MBTilesHandler(BaseHTTPRequestHandler):
 
         name = parts[1]
 
-        # For single-tileset backwards compat: if name looks like a zoom level
-        # and there's only one tileset, treat path as /{z}/{x}/{y}
-        if name.isdigit() and len(TILESETS) == 1:
+        # Single-tileset backwards compat: if name isn't a known tileset
+        # and there's only one tileset, treat entire path as under that tileset
+        if name not in TILESETS and len(TILESETS) == 1:
             only_name = next(iter(TILESETS))
-            self.serve_tile(only_name, path)
+            rest = path  # e.g. /metadata.json or /14/123/456.pbf
+
+            if rest == '/metadata.json':
+                self.serve_metadata(only_name)
+            else:
+                self.serve_tile(only_name, rest)
             return
 
         if name not in TILESETS:
@@ -384,16 +389,18 @@ class MBTilesHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path.rstrip('/')
 
-        # Parse /{name}/edit
+        # Parse /{name}/edit or /edit (single-tileset compat)
         parts = path.split('/', 2)
-        if len(parts) < 3:
-            self.send_json_error(404, 'Not found')
-            return
 
-        name = parts[1]
-        rest = '/' + parts[2]
-
-        if rest != '/edit':
+        if len(parts) == 2 and parts[1] == 'edit' and len(TILESETS) == 1:
+            name = next(iter(TILESETS))
+        elif len(parts) >= 3:
+            name = parts[1]
+            rest = '/' + parts[2]
+            if rest != '/edit':
+                self.send_json_error(404, 'Not found')
+                return
+        else:
             self.send_json_error(404, 'Not found')
             return
 
