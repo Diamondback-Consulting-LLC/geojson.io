@@ -87,6 +87,17 @@ module.exports = function fileBar(context) {
             }
           },
           {
+            title: 'Add vector tile layer',
+            alt: 'Add a local or remote vector tile (PBF/mbtiles) layer',
+            action: function () {
+              const baseUrl = prompt(
+                'Tile server URL\ne.g. http://localhost:8081'
+              );
+              if (baseUrl === null) return;
+              meta.addvectortiles(context, baseUrl);
+            }
+          },
+          {
             title: 'Zoom to features',
             alt: 'Zoom to the extent of all features',
             action: function () {
@@ -247,7 +258,24 @@ module.exports = function fileBar(context) {
           const files = this.files;
           if (!(files && files.length)) return;
           Array.from(files).forEach((file) => {
+            console.log(
+              '[geojson.io] Opening file:',
+              file.name,
+              'size:',
+              file.size,
+              'type:',
+              file.type
+            );
             readFile.readAsText(file, (err, text) => {
+              if (err) {
+                console.error('[geojson.io] readAsText error:', err);
+                onImport(err);
+                return;
+              }
+              console.log(
+                '[geojson.io] readAsText complete, text length:',
+                text ? text.length : 0
+              );
               readFile.readFile(file, text, onImport);
               if (file.path) {
                 context.data.set({
@@ -262,6 +290,16 @@ module.exports = function fileBar(context) {
     }
 
     function onImport(err, gj, warning) {
+      console.log('[geojson.io] onImport called:', {
+        err,
+        hasGj: !!gj,
+        warning
+      });
+      if (err && err.message) {
+        console.error('[geojson.io] Import error:', err.message);
+        flash(context.container, err.message).classed('error', 'true');
+        return;
+      }
       gj = geojsonNormalize(gj);
       if (gj) {
         context.data.mergeFeatures(gj.features);

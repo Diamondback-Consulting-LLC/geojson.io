@@ -92,6 +92,12 @@ function readAsText(f, callback) {
 
 function readFile(f, text, callback) {
   const fileType = detectType(f, text);
+  console.log(
+    '[geojson.io] readFile detectType:',
+    fileType,
+    'for file:',
+    f.name
+  );
 
   if (!fileType) {
     return callback({
@@ -144,8 +150,9 @@ function readFile(f, text, callback) {
         return callback(null, gj);
       }
     } catch (err) {
-      alert('Invalid JSON file: ' + err);
-      return;
+      return callback({
+        message: 'Invalid JSON file: ' + err
+      });
     }
   } else if (fileType === 'dsv') {
     csv2geojson.csv2geojson(
